@@ -24,6 +24,8 @@ import jieba
 from dotenv import load_dotenv
 import requests
 import re
+import time
+import json
 
 # 加载环境变量
 load_dotenv()
@@ -73,16 +75,21 @@ st.set_page_config(
 # 添加开发者信息
 st.markdown("<h6 style='text-align: right; color: gray;'>开发者: Huaiyuan Tan</h6>", unsafe_allow_html=True)
 
-# 隐藏 Streamlit 默认的菜单、页脚和 Deploy 按钮
-hide_streamlit_style = """
+# 自定义样式，但保留Streamlit默认UI元素
+custom_style = """
     <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display: none;}
-    header {visibility: hidden;}
+    .reportview-container .main .block-container{
+        padding-top: 1rem;
+        padding-right: 1rem;
+        padding-left: 1rem;
+        padding-bottom: 1rem;
+    }
+    .stColumn {
+        padding: 5px;
+    }
     </style>
 """
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+st.markdown(custom_style, unsafe_allow_html=True)
 
 # 初始化OpenAI客户端
 chatgpt_client = OpenAI(
@@ -254,19 +261,26 @@ def search_documents(keywords, file_indices):
 # 知识问答模块
 def rag_qa(query, file_indices, relevant_docs=None):
     try:
-        st.write("开始处理查询...")
+        # 使用进度条替代普通文本提示
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # 1. 关键词提取和文档搜索 (10%)
+        status_text.text("正在分析问题关键词...")
         keywords = extract_keywords(query)
         if relevant_docs is None:
             relevant_docs = search_documents(keywords, file_indices)
-        
-        st.write(f"找到相关文档数量: {len(relevant_docs)}")
+        progress_bar.progress(10)
         
         if not relevant_docs:
+            status_text.error("未找到相关文档，请尝试使用不同的关键词。")
             return {
                 'chatgpt': "没有找到相关文档。请尝试使用不同的关键词。",
                 'deepseek': "没有找到相关文档。请尝试使用不同的关键词。"
             }, [], ""
 
+        # 2. 向量检索准备 (20%)
+        status_text.text("正在准备相关文档内容...")
         all_chunks = []
         chunk_to_file = {}
         combined_index = faiss.IndexFlatL2(384)
@@ -282,13 +296,17 @@ def rag_qa(query, file_indices, relevant_docs=None):
                     vectors = index.reconstruct_n(0, index.ntotal)
                     combined_index.add(vectors.astype(np.float32))
                 offset += len(chunks)
+        progress_bar.progress(20)
 
         if not all_chunks:
+            status_text.error("无法从文档中提取内容，请确保文档已正确上传。")
             return {
                 'chatgpt': "没有找到相关信息。请确保已上传文档。",
                 'deepseek': "没有找到相关信息。请确保已上传文档。"
             }, [], ""
 
+        # 3. 执行向量检索 (30%)
+        status_text.text("正在检索最相关的内容片段...")
         query_vector = model.encode([query])
         D, I = combined_index.search(query_vector.astype(np.float32), k=3)
         context = []
@@ -299,50 +317,60 @@ def rag_qa(query, file_indices, relevant_docs=None):
                 context.append(chunk)
                 file_name = chunk_to_file.get(i, "未知文件")
                 context_with_sources.append((file_name, chunk))
+        progress_bar.progress(30)
 
+        # 4. 准备上下文 (40%)
+        status_text.text("正在整理上下文信息...")
         context_text = "\n".join(context)
-        
-        # 确保总token数不超过4096
         max_context_tokens = 3000
         original_length = len(context_text)
         while num_tokens_from_string(context_text) > max_context_tokens:
             context_text = context_text[:int(len(context_text)*0.9)]
-        if len(context_text) < original_length:
-            st.write(f"截断上下文从 {original_length} 到 {len(context_text)} 字符")
+        progress_bar.progress(40)
         
         if not context_text:
+            status_text.error("无法生成有效的上下文内容。")
             return {
                 'chatgpt': "没有找到相关信息。",
                 'deepseek': "没有找到相关信息。"
             }, [], ""
 
-        # 创建两列布局
+        # 5. 创建UI布局 (45%)
         left_col, right_col = st.columns(2)
-        
-        # 创建占位符
         with left_col:
             st.markdown("### ChatGPT回答")
             chatgpt_placeholder = st.empty()
             chatgpt_placeholder.markdown("""
             <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px;'>
-                正在处理ChatGPT回答...
+                <div class="loading">正在等待ChatGPT回答...</div>
             </div>
             """, unsafe_allow_html=True)
         
         with right_col:
             st.markdown("### Deepseek回答")
+            # 创建推理过程的expander
+            thinking_expander = st.expander("🤔 查看Deepseek实时推理过程", expanded=True)
+            with thinking_expander:
+                st.markdown("""
+                <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
+                    <p style='color: #666; margin-bottom: 10px;'>正在等待Deepseek开始推理...</p>
+                </div>
+                """, unsafe_allow_html=True)
+                thinking_placeholder = st.empty()
+            
             deepseek_placeholder = st.empty()
             deepseek_placeholder.markdown("""
             <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
-                等待处理Deepseek回答...
+                <div class="loading">等待ChatGPT完成后处理...</div>
             </div>
             """, unsafe_allow_html=True)
 
         responses = {'chatgpt': "", 'deepseek': ""}
         excerpts = {'chatgpt': "", 'deepseek': ""}
+        progress_bar.progress(45)
 
-        # 先处理ChatGPT回答
-        st.write("正在调用ChatGPT API...")
+        # 6. 处理ChatGPT回答 (45-70%)
+        status_text.text("正在获取ChatGPT回答...")
         if st.session_state.api_status['chatgpt']['ok']:
             try:
                 chatgpt_response = chatgpt_client.chat.completions.create(
@@ -353,7 +381,6 @@ def rag_qa(query, file_indices, relevant_docs=None):
                     ]
                 )
                 chatgpt_answer = chatgpt_response.choices[0].message.content
-                st.write("ChatGPT API调用成功")
                 
                 if "相关原文：" in chatgpt_answer:
                     chatgpt_parts = chatgpt_answer.split("相关原文：", 1)
@@ -375,12 +402,13 @@ def rag_qa(query, file_indices, relevant_docs=None):
         else:
             responses['chatgpt'] = "ChatGPT API 未连接"
             chatgpt_placeholder.error("ChatGPT API 未连接")
+        progress_bar.progress(70)
 
-        # 再处理Deepseek回答
-        st.write("正在调用Deepseek API...")
+        # 7. 处理Deepseek回答 (70-95%)
+        status_text.text("正在获取Deepseek回答...")
+        
         if st.session_state.api_status['deepseek']['ok']:
             try:
-                # 使用硬编码的配置
                 API_URL = f"{get_config('DEEPSEEK_API_BASE')}/chat/completions"
                 API_KEY = get_config("DEEPSEEK_API_KEY")
                 MODEL = "deepseek-ai/DeepSeek-R1"
@@ -392,33 +420,68 @@ def rag_qa(query, file_indices, relevant_docs=None):
                 data = {
                     "model": MODEL,
                     "messages": [
-                        {"role": "system", "content": "你是一位有帮助的助手。请根据给定的上下文回答问题。始终使用中文回答，无论问题是什么语言。在回答之后，请务必提供一段最相关的原文摘录，以'相关原文：'为前缀。"},
-                        {"role": "user", "content": f"上下文: {context_text}\n\n问题: {query}\n\n请提供你的回答然后在回答后面附上相关的原文摘录，以'相关原文：'为前缀。"}
+                        {"role": "system", "content": "你是一位有帮助的助手。请根据给定的上下文回答问题。始终使用中文回答，无论问题是什么语言。在回答之后，请务必提供一段最相关的原文摘录，以'相关原文：'为前缀。在回答过程中，请使用'/think/你的推理过程/think/'的格式来展示你的推理过程。"},
+                        {"role": "user", "content": f"上下文: {context_text}\n\n问题: {query}\n\n请一步步思考并回答这个问题。在思考过程中，用'/think/你的推理过程/think/'格式来展示你的推理过程，最后提供完整答案和相关原文。"}
                     ],
-                    "max_tokens": 1000
+                    "max_tokens": 1000,
+                    "stream": True
                 }
                 
+                # 使用stream模式发送请求
                 response = requests.post(
                     API_URL,
                     headers=headers,
-                    json=data
+                    json=data,
+                    stream=True
                 )
                 
                 if response.status_code != 200:
                     error_detail = response.json() if response.text else "无详细错误信息"
-                    st.write(f"错误详情: {error_detail}")
                     raise Exception(f"API返回错误: {error_detail}")
                 
-                response_data = response.json()
-                deepseek_answer = response_data['choices'][0]['message']['content']
-                st.write("Deepseek API调用成功")
+                # 用于存储完整的响应
+                full_response = ""
+                current_think = ""
+                think_count = 0
                 
-                # 解析推理过程和答案
-                think_pattern = r'/think/(.*?)/think/'
-                think_matches = re.findall(think_pattern, deepseek_answer, re.DOTALL)
+                # 处理流式响应
+                for line in response.iter_lines():
+                    if line:
+                        # 移除"data: "前缀并解析JSON
+                        json_str = line.decode('utf-8').replace('data: ', '')
+                        if json_str.strip() == '[DONE]':
+                            break
+                        try:
+                            chunk = json.loads(json_str)
+                            if chunk.get('choices') and chunk['choices'][0].get('delta', {}).get('content'):
+                                content = chunk['choices'][0]['delta']['content']
+                                full_response += content
+                                
+                                # 检查是否在推理过程中
+                                if '/think/' in content:
+                                    current_think = content
+                                elif current_think:
+                                    current_think += content
+                                
+                                # 如果发现完整的推理过程，显示它
+                                if current_think and '/think/' in current_think and current_think.endswith('/think/'):
+                                    think_count += 1
+                                    clean_think = current_think.replace('/think/', '')
+                                    thinking_placeholder.markdown(f"""
+                                    <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; border: 1px solid #e9ecef;'>
+                                        <div style='color: #495057; margin-bottom: 8px;'><strong>🔄 推理步骤 {think_count}</strong></div>
+                                        <div style='color: #212529;'>{clean_think.strip()}</div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                    current_think = ""
+                        except json.JSONDecodeError:
+                            continue
+                
+                # 解析最终答案
+                deepseek_answer = full_response
                 
                 # 移除所有推理过程，得到最终答案
-                final_answer = re.sub(think_pattern, '', deepseek_answer, flags=re.DOTALL)
+                final_answer = re.sub(r'/think/.*?/think/', '', deepseek_answer, flags=re.DOTALL)
                 
                 # 处理相关原文
                 if "相关原文：" in final_answer:
@@ -436,29 +499,21 @@ def rag_qa(query, file_indices, relevant_docs=None):
                 """
                 deepseek_placeholder.markdown(deepseek_content, unsafe_allow_html=True)
                 
-                # 如果有推理过程，显示在expander中
-                if think_matches:
-                    with deepseek_placeholder.expander("查看推理过程", expanded=False):
-                        for i, think in enumerate(think_matches, 1):
-                            st.markdown(f"""
-                            <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px; margin-bottom: 10px;'>
-                                <strong>推理步骤 {i}:</strong><br>
-                                {think.strip()}
-                            </div>
-                            """, unsafe_allow_html=True)
             except Exception as e:
-                st.error(f"Deepseek API调用出错: {str(e)}")
-                st.error(f"Deepseek配置信息：\nURL: {API_URL}\n模型: {MODEL}")
                 responses['deepseek'] = "API调用出错，请稍后重试"
                 deepseek_placeholder.error("获取Deepseek回答失败")
         else:
             responses['deepseek'] = "Deepseek API 未连接"
             deepseek_placeholder.error("Deepseek API 未连接")
+        progress_bar.progress(95)
 
+        # 8. 显示补充信息 (95-100%)
+        status_text.text("正在整理补充信息...")
+        
         # 显示来源文档
-        if sources:
+        if context_with_sources:
             st.markdown("### 来源文档")
-            for file_name, context in sources:
+            for file_name, context in context_with_sources:
                 with st.expander(f"📄 {file_name}"):
                     st.write(context)
         
@@ -472,9 +527,21 @@ def rag_qa(query, file_indices, relevant_docs=None):
             </div>
             """, unsafe_allow_html=True)
 
-        return responses, sources, excerpt
+        progress_bar.progress(100)
+        status_text.text("处理完成！")
+        
+        # 清理临时UI元素
+        time.sleep(0.5)  # 给用户一个短暂的时间看到完成状态
+        progress_bar.empty()
+        status_text.empty()
+
+        return responses, context_with_sources, excerpt
 
     except Exception as e:
+        if 'progress_bar' in locals():
+            progress_bar.empty()
+        if 'status_text' in locals():
+            status_text.empty()
         st.error(f"处理查询时发生错误: {str(e)}")
         import traceback
         st.error(f"错误详情:\n{traceback.format_exc()}")
@@ -599,55 +666,12 @@ def main():
     if query:
         try:
             with st.spinner("正在查找答案..."):
-                responses, sources, excerpt = rag_qa(
+                # 只调用rag_qa函数，不再重复显示结果
+                rag_qa(
                     query, 
                     st.session_state.file_indices,
                     st.session_state.get('relevant_docs')
                 )
-                
-                # 创建两列布局
-                left_col, right_col = st.columns(2)
-                
-                # 左侧显示ChatGPT回答
-                with left_col:
-                    st.markdown("### ChatGPT回答")
-                    if responses and 'chatgpt' in responses and responses['chatgpt']:
-                        st.markdown(f"""
-                        <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px;'>
-                            {responses['chatgpt']}
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.error("获取ChatGPT回答失败")
-                
-                # 右侧显示Deepseek回答
-                with right_col:
-                    st.markdown("### Deepseek回答")
-                    if responses and 'deepseek' in responses and responses['deepseek']:
-                        st.markdown(f"""
-                        <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
-                            {responses['deepseek']}
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.error("获取Deepseek回答失败")
-                
-                # 显示来源文档
-                if sources:
-                    st.markdown("### 来源文档")
-                    for file_name, context in sources:
-                        with st.expander(f"📄 {file_name}"):
-                            st.write(context)
-                
-                # 显示相关原文
-                if excerpt:
-                    st.markdown("### 相关原文")
-                    st.markdown(f"""
-                    <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px; border: 1px solid #dee2e6;'>
-                        {excerpt}
-                    </div>
-                    """, unsafe_allow_html=True)
-
         except Exception as e:
             st.error(f"处理问题时发生错误: {str(e)}")
             import traceback
