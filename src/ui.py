@@ -53,7 +53,7 @@ def show_model_status(chatgpt_status, deepseek_status):
             st.error(f"❌ {chatgpt_status['model']}\n\n状态：{chatgpt_status['message']}")
     
     with status_col2:
-        st.markdown("### Deepseek")
+        st.markdown("### DeepSeek")
         if deepseek_status['ok']:
             st.success(f"✅ {deepseek_status['model']}\n\n状态：{deepseek_status['message']}")
         else:
