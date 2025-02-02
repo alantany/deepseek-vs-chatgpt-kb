@@ -353,7 +353,7 @@ def rag_qa(query, file_indices, relevant_docs=None):
             with thinking_expander:
                 st.markdown("""
                 <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
-                    <p style='color: #666; margin-bottom: 10px;'>正在等待Deepseek开始推理...</p>
+                    <p style='color: #666; margin-bottom: 10px;'>等待开始推理...</p>
                 </div>
                 """, unsafe_allow_html=True)
                 thinking_placeholder = st.empty()
@@ -361,7 +361,7 @@ def rag_qa(query, file_indices, relevant_docs=None):
             deepseek_placeholder = st.empty()
             deepseek_placeholder.markdown("""
             <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
-                <div class="loading">等待ChatGPT完成后处理...</div>
+                <div class="loading">等待开始处理...</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -406,9 +406,22 @@ def rag_qa(query, file_indices, relevant_docs=None):
 
         # 7. 处理Deepseek回答 (70-95%)
         status_text.text("正在获取Deepseek回答...")
+        deepseek_placeholder.markdown("""
+        <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
+            <div class="loading">正在处理Deepseek回答...</div>
+        </div>
+        """, unsafe_allow_html=True)
         
         if st.session_state.api_status['deepseek']['ok']:
             try:
+                # 更新推理过程的状态提示
+                with thinking_expander:
+                    st.markdown("""
+                    <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
+                        <p style='color: #666; margin-bottom: 10px;'>正在进行推理...</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
                 API_URL = f"{get_config('DEEPSEEK_API_BASE')}/chat/completions"
                 API_KEY = get_config("DEEPSEEK_API_KEY")
                 MODEL = "deepseek-ai/DeepSeek-R1"
@@ -442,7 +455,11 @@ def rag_qa(query, file_indices, relevant_docs=None):
                 # 用于存储完整的响应
                 full_response = ""
                 current_think = ""
+                current_answer = ""
                 think_count = 0
+                
+                # 创建一个空的容器用于显示实时推理过程
+                thinking_container = thinking_placeholder.container()
                 
                 # 处理流式响应
                 for line in response.iter_lines():
@@ -459,21 +476,46 @@ def rag_qa(query, file_indices, relevant_docs=None):
                                 
                                 # 检查是否在推理过程中
                                 if '/think/' in content:
-                                    current_think = content
-                                elif current_think:
-                                    current_think += content
+                                    if current_think:
+                                        # 如果已经有一个推理过程在进行，先保存它
+                                        think_count += 1
+                                        thinking_container.markdown(f"""
+                                        <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; border: 1px solid #e9ecef;'>
+                                            <div style='color: #495057; margin-bottom: 8px;'><strong>🔄 推理步骤 {think_count}</strong></div>
+                                            <div style='color: #212529;'>{current_think.strip()}</div>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                    current_think = content.replace('/think/', '')
+                                elif current_think is not None:
+                                    if '/think/' in content:  # 结束当前推理
+                                        current_think = current_think.replace('/think/', '')
+                                        think_count += 1
+                                        thinking_container.markdown(f"""
+                                        <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; border: 1px solid #e9ecef;'>
+                                            <div style='color: #495057; margin-bottom: 8px;'><strong>🔄 推理步骤 {think_count}</strong></div>
+                                            <div style='color: #212529;'>{current_think.strip()}</div>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                        current_think = None
+                                    else:
+                                        current_think += content
+                                        # 实时更新当前推理步骤
+                                        thinking_container.markdown(f"""
+                                        <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; border: 1px solid #e9ecef;'>
+                                            <div style='color: #495057; margin-bottom: 8px;'><strong>🔄 推理步骤 {think_count + 1} (进行中...)</strong></div>
+                                            <div style='color: #212529;'>{current_think.strip()}</div>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                else:
+                                    current_answer += content
+                                    # 实时更新答案
+                                    if not content.startswith('/think/'):
+                                        deepseek_placeholder.markdown(f"""
+                                        <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
+                                            {current_answer}
+                                        </div>
+                                        """, unsafe_allow_html=True)
                                 
-                                # 如果发现完整的推理过程，显示它
-                                if current_think and '/think/' in current_think and current_think.endswith('/think/'):
-                                    think_count += 1
-                                    clean_think = current_think.replace('/think/', '')
-                                    thinking_placeholder.markdown(f"""
-                                    <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; border: 1px solid #e9ecef;'>
-                                        <div style='color: #495057; margin-bottom: 8px;'><strong>🔄 推理步骤 {think_count}</strong></div>
-                                        <div style='color: #212529;'>{clean_think.strip()}</div>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                    current_think = ""
                         except json.JSONDecodeError:
                             continue
                 
