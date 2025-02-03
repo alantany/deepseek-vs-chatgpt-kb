@@ -23,8 +23,12 @@ REQUIRED_CONFIGS = {
     'OPENAI_API_KEY': '用于ChatGPT的API密钥',
     'OPENAI_API_BASE': 'ChatGPT的API基础URL',
     'DEEPSEEK_API_KEY': '用于Deepseek的API密钥',
-    'DEEPSEEK_API_BASE': 'Deepseek的API基础URL'
+    'DEEPSEEK_API_BASE': 'Deepseek的API基础URL',
+    'OLLAMA_BASE_URL': 'Ollama服务的基础URL',
 }
+
+# Ollama模型配置
+OLLAMA_DEEPSEEK_MODEL = "deepseek-r1:14b"
 
 def check_configs():
     """

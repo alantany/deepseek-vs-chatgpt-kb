@@ -7,7 +7,7 @@ import time
 import requests
 import streamlit as st
 from .search import extract_keywords, search_documents, vector_search
-from .config import get_config
+from .config import get_config, OLLAMA_DEEPSEEK_MODEL
 
 def process_chatgpt_response(client, context_text, query):
     """
@@ -130,4 +130,92 @@ def process_deepseek_response(context_text, query, answer_container, thinking_co
         
     except Exception as e:
         st.error(f"Deepseek API调用出错: {str(e)}")
+        return "API调用出错，请稍后重试", "", []
+
+def process_local_deepseek_response(context_text, query, answer_container, thinking_container):
+    """
+    处理本地部署的Deepseek模型的回答
+    """
+    try:
+        API_URL = f"{get_config('OLLAMA_BASE_URL')}/api/generate"
+        
+        # 构建提示词
+        prompt = f"""你是一位有帮助的助手。请根据给定的上下文回答问题。始终使用中文回答，无论问题是什么语言。
+在回答过程中，请使用'/think/你的推理过程/think/'的格式来展示你的推理过程。
+
+上下文: {context_text}
+
+问题: {query}
+
+请一步步思考并回答这个问题。在思考过程中，用'/think/你的推理过程/think/'格式来展示你的推理过程，最后提供完整答案。"""
+        
+        data = {
+            "model": OLLAMA_DEEPSEEK_MODEL,
+            "prompt": prompt,
+            "stream": True
+        }
+        
+        response = requests.post(API_URL, json=data, stream=True)
+        
+        if response.status_code != 200:
+            raise Exception(f"API返回错误: {response.text}")
+        
+        # 用于收集所有内容的缓冲区
+        full_content = ""
+        current_chunk = ""
+        
+        def extract_and_display_answer(content):
+            """
+            从完整内容中提取答案并显示
+            """
+            # 找到最后一个推理过程的结束位置
+            last_think_end = content.rfind('/think/')
+            if last_think_end != -1:
+                # 找到这个位置之后的第一个换行符
+                next_newline = content.find('\n', last_think_end)
+                if next_newline != -1:
+                    # 提取答案部分（推理过程之后的内容）
+                    answer = content[next_newline:].strip()
+                    if answer:
+                        # 更新答案显示
+                        answer_container.markdown(f"""
+                        <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
+                            {answer}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        return answer
+            return ""
+        
+        for line in response.iter_lines():
+            if line:
+                try:
+                    chunk = json.loads(line)
+                    if not chunk.get('response'):
+                        continue
+                        
+                    content = chunk['response']
+                    full_content += content
+                    current_chunk += content
+                    
+                    # 实时更新推理区域显示
+                    thinking_container.markdown(f"""
+                    <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px;'>
+                        {full_content}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # 当收集到一定量的内容时尝试提取答案
+                    if any(current_chunk.strip().endswith(end) for end in ['。', '！', '？', '：', '；', '\n']):
+                        extract_and_display_answer(full_content)
+                        current_chunk = ""
+                
+                except json.JSONDecodeError:
+                    continue
+        
+        # 最后一次尝试提取答案
+        final_answer = extract_and_display_answer(full_content)
+        return final_answer, "", []
+        
+    except Exception as e:
+        st.error(f"本地DeepSeek API调用出错: {str(e)}")
         return "API调用出错，请稍后重试", "", [] 

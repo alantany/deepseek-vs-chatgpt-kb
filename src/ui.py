@@ -6,7 +6,9 @@ import streamlit as st
 from .document_processor import vectorize_document
 from .index_manager import save_index, delete_index
 from .search import extract_keywords, search_documents
-from .qa_system import process_chatgpt_response, process_deepseek_response
+from .qa_system import process_chatgpt_response, process_deepseek_response, process_local_deepseek_response
+from .config import get_config, OLLAMA_DEEPSEEK_MODEL
+import requests
 
 def setup_page():
     """
@@ -43,21 +45,44 @@ def show_model_status(chatgpt_status, deepseek_status):
     显示模型状态
     """
     st.markdown("## 🤖 模型状态")
-    status_col1, status_col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
-    with status_col1:
+    with col1:
         st.markdown("### ChatGPT")
         if chatgpt_status['ok']:
             st.success(f"✅ {chatgpt_status['model']}\n\n状态：{chatgpt_status['message']}")
         else:
             st.error(f"❌ {chatgpt_status['model']}\n\n状态：{chatgpt_status['message']}")
     
-    with status_col2:
-        st.markdown("### DeepSeek")
+    with col2:
+        st.markdown("### Deepseek")
         if deepseek_status['ok']:
             st.success(f"✅ {deepseek_status['model']}\n\n状态：{deepseek_status['message']}")
         else:
             st.error(f"❌ {deepseek_status['model']}\n\n状态：{deepseek_status['message']}")
+    
+    with col3:
+        st.markdown("### 本地DeepSeek")
+        try:
+            # 获取Ollama基础URL
+            ollama_url = get_config('OLLAMA_BASE_URL')
+            # 获取模型名称
+            model_name = get_config('OLLAMA_DEEPSEEK_MODEL')
+            
+            try:
+                response = requests.get(f"{ollama_url}/api/tags")
+                if response.status_code == 200:
+                    models = response.json().get('models', [])
+                    if model_name in [model['name'] for model in models]:
+                        st.success(f"✅ {model_name}\n\n状态：连接正常")
+                    else:
+                        st.warning(f"⚠️ {model_name}\n\n状态：模型未加载")
+                else:
+                    st.error(f"❌ 本地DeepSeek\n\n状态：连接失败 - HTTP {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ 本地DeepSeek\n\n状态：连接错误 - {str(e)}")
+        except Exception as e:
+            st.error("❌ 本地DeepSeek\n\n状态：配置错误")
     
     st.markdown("---")
 
@@ -114,19 +139,19 @@ def handle_qa(query, chatgpt_client, context_text):
     """
     处理问答
     """
-    left_col, right_col = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
-    with left_col:
+    with col1:
         st.markdown("### ChatGPT回答")
         chatgpt_placeholder = st.empty()
         chatgpt_placeholder.markdown("""
         <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px;'>
-            <div class="loading">正在等待ChatGPT回答...</div>
+            <div class="loading">正在处理中...</div>
         </div>
         """, unsafe_allow_html=True)
     
-    with right_col:
-        st.markdown("### Deepseek回答")
+    with col2:
+        st.markdown("### DeepSeek回答")
         
         # 创建一个默认收起的expander用于显示推理过程
         thinking_expander = st.expander("🤔 查看Deepseek推理过程", expanded=False)
@@ -134,7 +159,7 @@ def handle_qa(query, chatgpt_client, context_text):
             thinking_container = st.empty()
             thinking_container.markdown("""
             <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
-                <p style='color: #666; margin-bottom: 10px;'>等待开始推理...</p>
+                <p style='color: #666; margin-bottom: 10px;'>等待处理中...</p>
             </div>
             """, unsafe_allow_html=True)
         
@@ -142,24 +167,116 @@ def handle_qa(query, chatgpt_client, context_text):
         deepseek_answer_container = st.empty()
         deepseek_answer_container.markdown("""
         <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
-            <div class="loading">等待开始处理...</div>
+            <div class="loading">等待处理中...</div>
         </div>
         """, unsafe_allow_html=True)
     
+    with col3:
+        st.markdown("### 本地DeepSeek回答")
+        
+        # 创建一个默认收起的expander用于显示本地模型的推理过程
+        local_thinking_expander = st.expander("🤔 查看本地Deepseek推理过程", expanded=False)
+        with local_thinking_expander:
+            local_thinking_container = st.empty()
+            local_thinking_container.markdown("""
+            <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
+                <p style='color: #666; margin-bottom: 10px;'>等待处理中...</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # 创建一个空的容器用于显示本地模型的答案
+        local_deepseek_answer_container = st.empty()
+        local_deepseek_answer_container.markdown("""
+        <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
+            <div class="loading">等待处理中...</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # 初始化返回值
+    chatgpt_result = ("", "")
+    deepseek_result = ("", "")
+    local_deepseek_result = ("", "")
+    
     # 处理ChatGPT回答
-    chatgpt_answer, chatgpt_excerpt = process_chatgpt_response(chatgpt_client, context_text, query)
-    chatgpt_placeholder.markdown(f"""
-    <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px;'>
-        {chatgpt_answer}
+    try:
+        chatgpt_answer, chatgpt_excerpt = process_chatgpt_response(chatgpt_client, context_text, query)
+        chatgpt_placeholder.markdown(f"""
+        <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px;'>
+            {chatgpt_answer}
+        </div>
+        """, unsafe_allow_html=True)
+        chatgpt_result = (chatgpt_answer, chatgpt_excerpt)
+    except Exception as e:
+        chatgpt_placeholder.markdown(f"""
+        <div style='background-color: #ffe6e6; padding: 15px; border-radius: 5px;'>
+            ChatGPT服务暂时不可用: {str(e)}
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # 更新Deepseek状态为正在处理
+    thinking_container.markdown("""
+    <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
+        <p style='color: #666; margin-bottom: 10px;'>正在推理中...</p>
+    </div>
+    """, unsafe_allow_html=True)
+    deepseek_answer_container.markdown("""
+    <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
+        <div class="loading">正在处理中...</div>
     </div>
     """, unsafe_allow_html=True)
     
     # 处理Deepseek回答
-    deepseek_answer, deepseek_excerpt, thinking_steps = process_deepseek_response(
-        context_text, 
-        query, 
-        deepseek_answer_container,
-        thinking_container
-    )
+    try:
+        deepseek_answer, deepseek_excerpt, thinking_steps = process_deepseek_response(
+            context_text, 
+            query, 
+            deepseek_answer_container,
+            thinking_container
+        )
+        deepseek_result = (deepseek_answer, deepseek_excerpt)
+    except Exception as e:
+        deepseek_answer_container.markdown(f"""
+        <div style='background-color: #ffe6e6; padding: 15px; border-radius: 5px;'>
+            Deepseek服务暂时不可用: {str(e)}
+        </div>
+        """, unsafe_allow_html=True)
+        thinking_container.markdown("""
+        <div style='background-color: #ffe6e6; padding: 10px; border-radius: 5px;'>
+            <p style='color: #666;'>推理过程不可用</p>
+        </div>
+        """, unsafe_allow_html=True)
     
-    return (chatgpt_answer, chatgpt_excerpt), (deepseek_answer, deepseek_excerpt) 
+    # 更新本地Deepseek状态为正在处理
+    local_thinking_container.markdown("""
+    <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
+        <p style='color: #666; margin-bottom: 10px;'>正在推理中...</p>
+    </div>
+    """, unsafe_allow_html=True)
+    local_deepseek_answer_container.markdown("""
+    <div style='background-color: #e6f3ff; padding: 15px; border-radius: 5px;'>
+        <div class="loading">正在处理中...</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 处理本地DeepSeek回答
+    try:
+        local_deepseek_answer, local_deepseek_excerpt, local_thinking_steps = process_local_deepseek_response(
+            context_text,
+            query,
+            local_deepseek_answer_container,
+            local_thinking_container
+        )
+        local_deepseek_result = (local_deepseek_answer, local_deepseek_excerpt)
+    except Exception as e:
+        local_deepseek_answer_container.markdown(f"""
+        <div style='background-color: #ffe6e6; padding: 15px; border-radius: 5px;'>
+            本地Deepseek服务暂时不可用: {str(e)}
+        </div>
+        """, unsafe_allow_html=True)
+        local_thinking_container.markdown("""
+        <div style='background-color: #ffe6e6; padding: 10px; border-radius: 5px;'>
+            <p style='color: #666;'>推理过程不可用</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    return chatgpt_result, deepseek_result 
