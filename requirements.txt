@@ -12,5 +12,3 @@ tiktoken>=0.5.0
 jieba>=0.42.1
 aiohttp>=3.8.0
 tenacity>=8.2.0
-torch>=1.13.1
-transformers==4.26.1
