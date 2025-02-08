@@ -39,7 +39,7 @@ def process_deepseek_response(context_text, query, answer_container, thinking_co
     try:
         API_URL = f"{get_config('DEEPSEEK_API_BASE')}/chat/completions"
         API_KEY = get_config("DEEPSEEK_API_KEY")
-        MODEL = "deepseek-ai/DeepSeek-R1"
+        MODEL = "deepseek/deepseek-r1:free"
         
         headers = {
             "Content-Type": "application/json",
