@@ -12,3 +12,4 @@ tiktoken>=0.5.0
 jieba>=0.42.1
 aiohttp>=3.8.0
 tenacity>=8.2.0
+torch>=1.9.0,<2.0.0
